@@ -1,0 +1,18 @@
+pip install pythonnet
+pip install pyinstaller
+pip install -r requirements.txt
+
+pip freeze > requirements.txt
+
+
+- **Basic build:**
+    ```sh
+    pyinstaller --windowed adds-route.py 
+    ```
+- **Build with a custom icon:**
+    ```sh
+    pyinstaller --onefile --windowed --icon=icon.ico --name "Tray Clock" app.py
+    ```
+
+    pyinstaller --onefile --windowed --add-data "assets;assets" --icon=app.ico --name "MyApp" adds-route.py
+         pip install pyinstaller
