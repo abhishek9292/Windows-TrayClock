@@ -1,2 +1,4 @@
 /build
 .spec
+.lnk
+dist/Tray Clock.exe - Shortcut.lnk

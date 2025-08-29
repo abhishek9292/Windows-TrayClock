@@ -1,0 +1,9 @@
+{
+  "position": "bottomright",
+  "custom_x": 50,
+  "custom_y": 50,
+  "font_family": "Segoe UI",
+  "font_size": 12,
+  "datetime_format": "%I:%M:%S %p\n%B %d, %Y",
+  "visible": true
+}
