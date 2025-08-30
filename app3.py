@@ -11,6 +11,8 @@ from PIL import Image, ImageDraw
 import pystray
 from pystray import MenuItem
 import threading
+import pytz
+from datetime import datetime
 
 # Windows API constants
 WS_EX_TRANSPARENT = 0x20
@@ -20,9 +22,9 @@ GWL_EXSTYLE = -20
 class DesktopClock:
     def __init__(self):
         self.config_file = "clock_config.json"
-        self.position_x=50
-        self.position_y=50
-        self.lock_file="App.lock"
+        self.position_x = 50
+        self.position_y = 50
+        self.lock_file = "App.lock"
         self.load_config()
         
         # Main clock window
@@ -31,14 +33,13 @@ class DesktopClock:
         self.root.wm_attributes("-topmost", True)
         self.root.wm_attributes("-transparentcolor", "black")
         
-        # Create label
-        self.label = tk.Label(
-            self.root, 
-            font=(self.config["font_family"], self.config["font_size"], "bold"),
-            fg="white", 
-            bg="black"
-        )
-        self.label.pack()
+        # Create a frame to hold multiple timezone labels
+        self.clock_frame = tk.Frame(self.root, bg="black")
+        self.clock_frame.pack()
+        
+        # Create labels for each timezone
+        self.labels = {}
+        self.create_timezone_labels()
         
         # Settings window (initially hidden)
         self.settings_window = None
@@ -60,18 +61,43 @@ class DesktopClock:
         # Handle window close
         self.root.protocol("WM_DELETE_WINDOW", self.hide_window)
     
+    def create_timezone_labels(self):
+        """Create labels for each timezone"""
+        for widget in self.clock_frame.winfo_children():
+            widget.destroy()
+        
+        self.labels = {}
+        
+        for i, tz_config in enumerate(self.config["timezones"]):
+            tz_name = tz_config["name"]
+            label = tk.Label(
+                self.clock_frame, 
+                font=(tz_config["font_family"], tz_config["font_size"], "bold"),
+                fg=tz_config.get("color", "white"), 
+                bg="black"
+            )
+            label.grid(row=i, column=0, sticky="w", pady=2)
+            self.labels[tz_name] = label
+    
     def load_config(self):
         """Load configuration from file or create default"""
         default_config = {
             "position": "topleft",
             "custom_x": 50,
             "custom_y": 50,
-            "font_family": "Segoe UI",
-            "font_size": 12,
-            "datetime_format": "%H:%M:%S\n%d-%m-%Y",
             "visible": True,
             "position_x": 50,
-            "position_y": 50
+            "position_y": 50,
+            "timezones": [
+                {
+                    "name": "Local",
+                    "timezone": "local",
+                    "font_family": "Segoe UI",
+                    "font_size": 12,
+                    "datetime_format": "%H:%M:%S\n%d-%m-%Y",
+                    "color": "white"
+                }
+            ]
         }
         
         try:
@@ -81,6 +107,11 @@ class DesktopClock:
             for key, value in default_config.items():
                 if key not in self.config:
                     self.config[key] = value
+            # Ensure timezones have all required fields
+            for tz in self.config["timezones"]:
+                for key, value in default_config["timezones"][0].items():
+                    if key not in tz:
+                        tz[key] = value
         except json.JSONDecodeError:
             self.config = default_config
             self.save_config()
@@ -110,15 +141,29 @@ class DesktopClock:
                                             styles | WS_EX_TRANSPARENT | WS_EX_LAYERED)
     
     def update_time(self):
-        """Update clock display"""
+        """Update clock display for all timezones"""
         if self.running:
-            try:
-                current_time = time.strftime(self.config["datetime_format"])
-                self.label.config(text=current_time)
-            except ValueError:
-                # Fallback if format is invalid
-                current_time = time.strftime("%H:%M:%S\n%d-%m-%Y")
-                self.label.config(text=current_time)
+            for tz_config in self.config["timezones"]:
+                tz_name = tz_config["name"]
+                try:
+                    if tz_config["timezone"] == "local":
+                        # Local time
+                        current_time = time.strftime(tz_config["datetime_format"])
+                    else:
+                        # Specific timezone
+                        tz = pytz.timezone(tz_config["timezone"])
+                        current_time = datetime.now(tz).strftime(tz_config["datetime_format"])
+                    
+                    self.labels[tz_name].config(text=current_time)
+                except (ValueError, pytz.UnknownTimeZoneError):
+                    # Fallback if format or timezone is invalid
+                    try:
+                        current_time = time.strftime("%H:%M:%S\n%d-%m-%Y")
+                        self.labels[tz_name].config(text=current_time)
+                    except:
+                        # Final fallback
+                        current_time = "Error"
+                        self.labels[tz_name].config(text=current_time)
             
             self.root.after(1000, self.update_time)
     
@@ -134,20 +179,19 @@ class DesktopClock:
             screen_width = self.root.winfo_screenwidth()
             screen_height = self.root.winfo_screenheight()
             
-            # Force the label to render and get actual window size
-            self.label.update_idletasks()
+            # Force the labels to render and get actual window size
+            self.clock_frame.update_idletasks()
             self.root.update_idletasks()
             
             # Get actual window dimensions after content is rendered
             window_width = self.root.winfo_reqwidth()
             window_height = self.root.winfo_reqheight()
             
-            # If window dimensions are still 1x1, use reasonable defaults based on font size
+            # If window dimensions are still small, use reasonable defaults
             if window_width <= 1 or window_height <= 1:
                 # Estimate window size based on font and text content
-                estimated_width = len("00:00:00 AM") * self.config["font_size"] * 0.6
-                # Two lines of text
-                estimated_height = 2 * self.config["font_size"] * 1.5  
+                estimated_width = len("00:00:00 AM") * max(tz["font_size"] for tz in self.config["timezones"]) * 0.6
+                estimated_height = sum(2 * tz["font_size"] * 1.5 for tz in self.config["timezones"])  # Sum of all timezone heights
                 window_width = int(estimated_width)
                 window_height = int(estimated_height)
             
@@ -166,8 +210,8 @@ class DesktopClock:
             x, y = positions.get(self.config["position"], (50, 50))
         
         self.root.geometry(f"+{x}+{y}")
-        self.position_x=x
-        self.position_y=y
+        self.position_x = x
+        self.position_y = y
         # Update again after positioning to ensure proper placement
         self.root.update_idletasks()
     
@@ -207,7 +251,7 @@ class DesktopClock:
         tray_thread.start()
     
     def show_settings(self, icon=None, item=None):
-        """Show settings dialog"""
+        """Show settings dialog with timezone management"""
         if self.settings_window is not None:
             self.settings_window.deiconify()
             self.settings_window.lift()
@@ -216,12 +260,20 @@ class DesktopClock:
         
         self.settings_window = tk.Toplevel(self.root)
         self.settings_window.title("Clock Settings")
-        self.settings_window.geometry("400x480")
+        self.settings_window.geometry("600x600")
         self.settings_window.resizable(False, True)
         
+        # Create notebook for tabs
+        notebook = ttk.Notebook(self.settings_window)
+        notebook.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        # General settings tab
+        general_frame = ttk.Frame(notebook, padding=10)
+        notebook.add(general_frame, text="General")
+        
         # Position settings
-        pos_frame = ttk.LabelFrame(self.settings_window, text="Position", padding=10)
-        pos_frame.pack(fill='x', padx=10, pady=5)
+        pos_frame = ttk.LabelFrame(general_frame, text="Position", padding=10)
+        pos_frame.pack(fill='x', pady=5)
         
         self.position_var = tk.StringVar(value=self.config["position"])
         
@@ -246,6 +298,7 @@ class DesktopClock:
                 value=value,
                 command=self.on_position_change
             ).grid(row=row, column=col, sticky="w", padx=5, pady=2)
+        
         # Custom position frame
         self.custom_frame = ttk.Frame(pos_frame)
         self.custom_frame.pack(fill='x', pady=5)
@@ -261,57 +314,53 @@ class DesktopClock:
         ttk.Label(self.custom_frame, text=f"Pos. (x,y): {self.position_x,self.position_y}").grid(row=0, column=4, sticky='w', padx=(20,0)) 
         self.on_position_change()
         
-        # Font settings
-        font_frame = ttk.LabelFrame(self.settings_window, text="Font", padding=10)
-        font_frame.pack(fill='x', padx=10, pady=5)
+        # Timezone management tab
+        timezone_frame = ttk.Frame(notebook, padding=10)
+        notebook.add(timezone_frame, text="Timezones")
         
-        ttk.Label(font_frame, text="Font Family:").grid(row=0, column=0, sticky='w')
-        self.font_family_var = tk.StringVar(value=self.config["font_family"])
-        font_combo = ttk.Combobox(font_frame, textvariable=self.font_family_var, 
-                                 values=list(font.families()), width=20)
-        font_combo.grid(row=0, column=1, padx=5, sticky='w')
+        # Timezone list with scrollbar
+        list_frame = ttk.Frame(timezone_frame)
+        list_frame.pack(fill='both', expand=True, pady=5)
         
-        ttk.Label(font_frame, text="Font Size:").grid(row=1, column=0, sticky='w', pady=(5,0))
-        self.font_size_var = tk.StringVar(value=str(self.config["font_size"]))
-        ttk.Entry(font_frame, textvariable=self.font_size_var, width=10).grid(row=1, column=1, padx=5, pady=(5,0), sticky='w')
+        # Create a canvas and scrollbar for the timezone list
+        canvas = tk.Canvas(list_frame, height=200)
+        scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=canvas.yview)
+        self.scrollable_frame = ttk.Frame(canvas)
         
-        # DateTime format
-        format_frame = ttk.LabelFrame(self.settings_window, text="Date/Time Format", padding=10)
-        format_frame.pack(fill='x', padx=10, pady=5)
+        self.scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
         
-        self.format_var = tk.StringVar(value=self.config["datetime_format"])
-        format_entry = tk.Text(format_frame, height=6, width=40)
-        format_entry.insert('1.0', self.config["datetime_format"])
-        format_entry.pack(fill='x')
+        canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
         
-        # Common format examples
-        examples_frame = ttk.Frame(format_frame)
-        examples_frame.pack(fill='x', pady=5)
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
         
-        examples = [
-            ("24h + Date", "%H:%M:%S\n%d-%m-%Y"),
-            ("12h + Date", "%I:%M:%S %p\n%B %d, %Y"),
-            ("Time only", "%H:%M:%S"),
-            ("Date only", "%A\n%B %d, %Y")
-        ]
+        # Add timezone button
+        add_button = ttk.Button(timezone_frame, text="Add Timezone", command=self.add_timezone_dialog)
+        add_button.pack(pady=5)
         
-        for i, (name, fmt) in enumerate(examples):
-            ttk.Button(examples_frame, text=name, width=12,
-                      command=lambda f=fmt: self.set_format(format_entry, f)).grid(row=i//4, column=i%4, padx=2, pady=2)
- 
+        # Populate timezone list
+        self.timezone_widgets = {}
+        self.update_timezone_list()
+        
         # Buttons
         button_frame = ttk.Frame(self.settings_window)
         button_frame.pack(fill='x', padx=10, pady=10)
         
         ttk.Button(button_frame, text="Apply", 
-                  command=lambda: self.apply_settings(format_entry)).pack(side='left', padx=5)
+                  command=self.apply_settings).pack(side='left', padx=5)
         ttk.Button(button_frame, text="Cancel", 
                   command=self.close_settings).pack(side='left', padx=5)
         ttk.Button(button_frame, text="OK", 
-                  command=lambda: self.apply_and_close(format_entry)).pack(side='left', padx=5)
+                  command=self.apply_and_close).pack(side='left', padx=5)
+        
         # Info Button
         self.info_btn = ttk.Button(button_frame, text="View Info", command=self.toggle_info)
         self.info_btn.pack(side='left', padx=5)
+        
         # Info text
         info_text = """
 Author: Abhishek Kumar
@@ -335,8 +384,90 @@ Setup for Auto Start:
         
         # Center the settings window
         self.settings_window.transient(self.root)
-
-     
+    
+    def update_timezone_list(self):
+        """Update the timezone list in settings"""
+        # Clear existing widgets
+        for widget in self.scrollable_frame.winfo_children():
+            widget.destroy()
+        
+        self.timezone_widgets = {}
+        
+        # Create widgets for each timezone
+        for i, tz_config in enumerate(self.config["timezones"]):
+            frame = ttk.Frame(self.scrollable_frame)
+            frame.pack(fill='x', pady=2)
+            
+            # Timezone name
+            name_var = tk.StringVar(value=tz_config["name"])
+            name_entry = ttk.Entry(frame, textvariable=name_var, width=15)
+            name_entry.grid(row=0, column=0, padx=2)
+            
+            # Timezone selection
+            tz_var = tk.StringVar(value=tz_config["timezone"])
+            tz_combo = ttk.Combobox(frame, textvariable=tz_var, width=20)
+            tz_combo['values'] = ["local"] + sorted(pytz.all_timezones)
+            tz_combo.grid(row=0, column=1, padx=2)
+            
+            # Font family
+            font_var = tk.StringVar(value=tz_config["font_family"])
+            font_combo = ttk.Combobox(frame, textvariable=font_var, width=15)
+            font_combo['values'] = list(font.families())
+            font_combo.grid(row=0, column=2, padx=2)
+            
+            # Font size
+            size_var = tk.StringVar(value=str(tz_config["font_size"]))
+            size_spin = ttk.Spinbox(frame, textvariable=size_var, from_=8, to=72, width=5)
+            size_spin.grid(row=0, column=3, padx=2)
+            
+            # Format
+            format_var = tk.StringVar(value=tz_config["datetime_format"])
+            format_entry = ttk.Entry(frame, textvariable=format_var, width=20)
+            format_entry.grid(row=0, column=4, padx=2)
+            
+            # Color
+            color_var = tk.StringVar(value=tz_config.get("color", "white"))
+            color_combo = ttk.Combobox(frame, textvariable=color_var, width=10)
+            color_combo['values'] = ["white", "red", "green", "blue", "yellow", "cyan", "magenta"]
+            color_combo.grid(row=0, column=5, padx=2)
+            
+            # Delete button
+            delete_btn = ttk.Button(frame, text="X", width=2,
+                                  command=lambda idx=i: self.remove_timezone(idx))
+            delete_btn.grid(row=0, column=6, padx=2)
+            
+            # Store references
+            self.timezone_widgets[i] = {
+                "frame": frame,
+                "name": name_var,
+                "timezone": tz_var,
+                "font_family": font_var,
+                "font_size": size_var,
+                "format": format_var,
+                "color": color_var
+            }
+    
+    def add_timezone_dialog(self):
+        """Add a new timezone"""
+        new_tz = {
+            "name": f"Timezone {len(self.config['timezones']) + 1}",
+            "timezone": "local",
+            "font_family": "Segoe UI",
+            "font_size": 12,
+            "datetime_format": "%H:%M:%S\n%d-%m-%Y",
+            "color": "white"
+        }
+        self.config["timezones"].append(new_tz)
+        self.update_timezone_list()
+    
+    def remove_timezone(self, index):
+        """Remove a timezone"""
+        if len(self.config["timezones"]) > 1:  # Keep at least one timezone
+            self.config["timezones"].pop(index)
+            self.update_timezone_list()
+        else:
+            messagebox.showwarning("Warning", "You must have at least one timezone.")
+    
     def make_clickable_text(self, parent, text):
         """Create a Text widget with auto-detected clickable URLs."""
         text_widget = tk.Text(parent, wrap="word", width=65, height=15,
@@ -381,42 +512,47 @@ Setup for Auto Start:
         if self.info_label.winfo_ismapped():
             self.info_label.pack_forget()
             self.info_btn.config(text="View Info")
-            self.settings_window.geometry("400x480")
+            self.settings_window.geometry("600x600")
         else:
             self.info_label.pack(padx=10, pady=20, anchor="w")
             self.info_btn.config(text="Hide Info")
-            self.settings_window.geometry("400x660")
+            self.settings_window.geometry("600x780")
 
     def on_position_change(self):
         """Handle position radio button change"""
         if hasattr(self, 'custom_frame'):
             if self.position_var.get() == "custom":
                 for widget in self.custom_frame.winfo_children():
-                    widget.configure(state='normal')
+                    if isinstance(widget, ttk.Entry):
+                        widget.configure(state='normal')
             else:
                 for widget in self.custom_frame.winfo_children():
                     if isinstance(widget, ttk.Entry):
                         widget.configure(state='disabled')
     
-    def set_format(self, text_widget, format_string):
-        """Set format in text widget"""
-        text_widget.delete('1.0', tk.END)
-        text_widget.insert('1.0', format_string)
-    
-    def apply_settings(self, format_entry):
+    def apply_settings(self):
         """Apply settings from dialog"""
         try:
-            # Update config
+            # Update general config
             self.config["position"] = self.position_var.get()
             self.config["custom_x"] = int(self.custom_x_var.get())
             self.config["custom_y"] = int(self.custom_y_var.get())
-            self.config["font_family"] = self.font_family_var.get()
-            self.config["font_size"] = int(self.font_size_var.get())
-            self.config["datetime_format"] = format_entry.get('1.0', tk.END).strip()
             self.config["position_x"] = int(self.position_x)
             self.config["position_y"] = int(self.position_y)
+            
+            # Update timezone configs
+            for i, tz_config in enumerate(self.config["timezones"]):
+                if i in self.timezone_widgets:
+                    widgets = self.timezone_widgets[i]
+                    tz_config["name"] = widgets["name"].get()
+                    tz_config["timezone"] = widgets["timezone"].get()
+                    tz_config["font_family"] = widgets["font_family"].get()
+                    tz_config["font_size"] = int(widgets["font_size"].get())
+                    tz_config["datetime_format"] = widgets["format"].get()
+                    tz_config["color"] = widgets["color"].get()
+            
             # Apply changes
-            self.label.configure(font=(self.config["font_family"], self.config["font_size"], "bold"))
+            self.create_timezone_labels()
             self.update_position()
             self.save_config()
             
@@ -425,9 +561,9 @@ Setup for Auto Start:
         except ValueError as e:
             messagebox.showerror("Error", f"Invalid input: {e}")
     
-    def apply_and_close(self, format_entry):
+    def apply_and_close(self):
         """Apply settings and close dialog"""
-        self.apply_settings(format_entry)
+        self.apply_settings()
         self.close_settings()
     
     def minimize_settings_to_tray(self):
@@ -523,9 +659,10 @@ if __name__ == "__main__":
     try:
         import pystray
         from PIL import Image, ImageDraw
+        import pytz
     except ImportError:
         print("Required packages missing. Install with:")
-        print("pip install pystray pillow")
+        print("pip install pystray pillow pytz")
         sys.exit(1)
     
     app = DesktopClock()

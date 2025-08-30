@@ -1,3 +1,4 @@
+import re
 import tkinter as tk
 from tkinter import ttk, messagebox, font
 import time
@@ -5,9 +6,10 @@ import ctypes
 import json
 import os
 import sys
+import webbrowser
 from PIL import Image, ImageDraw
 import pystray
-from pystray import MenuItem as item
+from pystray import MenuItem
 import threading
 
 # Windows API constants
@@ -18,6 +20,9 @@ GWL_EXSTYLE = -20
 class DesktopClock:
     def __init__(self):
         self.config_file = "clock_config.json"
+        self.position_x=50
+        self.position_y=50
+        self.lock_file="App.lock"
         self.load_config()
         
         # Main clock window
@@ -43,9 +48,11 @@ class DesktopClock:
         self.running = True
         
         # Initialize clock
+        self.update_time()  # Update time first to render content
         self.setup_clock()
-        self.update_position()
-        self.update_time()
+        
+        # Delay position update to ensure window is properly sized
+        self.root.after(100, self.update_position)
         
         # Setup system tray
         self.setup_tray()
@@ -62,16 +69,14 @@ class DesktopClock:
             "font_family": "Segoe UI",
             "font_size": 12,
             "datetime_format": "%H:%M:%S\n%d-%m-%Y",
-            "visible": True
+            "visible": True,
+            "position_x": 50,
+            "position_y": 50
         }
         
         try:
             with open(self.config_file, 'r') as f:
-                conf_data=json.load(f)
-                if conf_data is None:
-                    self.config = default_config
-                else:
-                    self.config = conf_data
+                self.config = json.load(f)
             # Ensure all keys exist
             for key, value in default_config.items():
                 if key not in self.config:
@@ -119,30 +124,51 @@ class DesktopClock:
     
     def update_position(self):
         """Update window position based on config"""
+        # Force window to update and calculate its size first
         self.root.update_idletasks()
         
         if self.config["position"] == "custom":
             x, y = self.config["custom_x"], self.config["custom_y"]
         else:
-            # Get screen dimensions
+            # Get screen dimensions of the primary monitor
             screen_width = self.root.winfo_screenwidth()
             screen_height = self.root.winfo_screenheight()
             
-            # Get window dimensions
+            # Force the label to render and get actual window size
+            self.label.update_idletasks()
+            self.root.update_idletasks()
+            
+            # Get actual window dimensions after content is rendered
             window_width = self.root.winfo_reqwidth()
             window_height = self.root.winfo_reqheight()
             
+            # If window dimensions are still 1x1, use reasonable defaults based on font size
+            if window_width <= 1 or window_height <= 1:
+                # Estimate window size based on font and text content
+                estimated_width = len("00:00:00 AM") * self.config["font_size"] * 0.6
+                estimated_height = 2 * self.config["font_size"] * 1.5  # Two lines of text
+                window_width = int(estimated_width)
+                window_height = int(estimated_height)
+            
+            # Add extra margin for taskbar (40px for Windows taskbar)
+            taskbar_margin = 40
+            side_margin = 10
+            
             positions = {
-                "topleft": (10, 10),
-                "topright": (screen_width - window_width - 10, 10),
-                "bottomleft": (10, screen_height - window_height - 40),
-                "bottomright": (screen_width - window_width - 10, screen_height - window_height - 40),
+                "topleft": (side_margin, side_margin),
+                "topright": (screen_width - window_width - side_margin, side_margin),
+                "bottomleft": (side_margin, screen_height - window_height - taskbar_margin),
+                "bottomright": (screen_width - window_width - side_margin, screen_height - window_height - taskbar_margin),
                 "center": ((screen_width - window_width) // 2, (screen_height - window_height) // 2)
             }
             
             x, y = positions.get(self.config["position"], (50, 50))
         
         self.root.geometry(f"+{x}+{y}")
+        self.position_x=x
+        self.position_y=y
+        # Update again after positioning to ensure proper placement
+        self.root.update_idletasks()
     
     def create_tray_image(self):
         """Create system tray icon"""
@@ -167,10 +193,10 @@ class DesktopClock:
         image = self.create_tray_image()
         
         menu = pystray.Menu(
-            item('Settings', self.show_settings),
-            item('Show' if not self.config["visible"] else 'Hide', self.toggle_visibility),
+            MenuItem('Settings', self.show_settings),
+            MenuItem('Show Clock' if not self.config["visible"] else 'Hide Clock', self.toggle_visibility),
             pystray.Menu.SEPARATOR,
-            item('Exit', self.quit_app)
+            MenuItem('Exit', self.quit_app)
         )
         
         self.tray_icon = pystray.Icon("desktop_clock", image, "Desktop Clock", menu)
@@ -182,14 +208,15 @@ class DesktopClock:
     def show_settings(self, icon=None, item=None):
         """Show settings dialog"""
         if self.settings_window is not None:
+            self.settings_window.deiconify()
             self.settings_window.lift()
             self.settings_window.focus_set()
             return
         
         self.settings_window = tk.Toplevel(self.root)
         self.settings_window.title("Clock Settings")
-        self.settings_window.geometry("400x500")
-        self.settings_window.resizable(False, False)
+        self.settings_window.geometry("400x540")
+        self.settings_window.resizable(False, True)
         
         # Position settings
         pos_frame = ttk.LabelFrame(self.settings_window, text="Position", padding=10)
@@ -206,10 +233,21 @@ class DesktopClock:
             ("Custom", "custom")
         ]
         
-        for text, value in positions:
-            ttk.Radiobutton(pos_frame, text=text, variable=self.position_var, 
-                           value=value, command=self.on_position_change).pack(anchor='w')
-        
+        # for text, value in positions:
+        #     ttk.Radiobutton(pos_frame, text=text, variable=self.position_var, 
+        #                    value=value, command=self.on_position_change).pack(anchor='w')
+        # place in 2 columns
+        radio_grid_frame = ttk.Frame(pos_frame)
+        radio_grid_frame.pack(fill='x', pady=5)
+        for i, (text, value) in enumerate(positions):
+            row, col = divmod(i, 2)
+            ttk.Radiobutton(
+                radio_grid_frame,
+                text=text,
+                variable=self.position_var,
+                value=value,
+                command=self.on_position_change
+            ).grid(row=row, column=col, sticky="w", padx=5, pady=2)
         # Custom position frame
         self.custom_frame = ttk.Frame(pos_frame)
         self.custom_frame.pack(fill='x', pady=5)
@@ -260,8 +298,8 @@ class DesktopClock:
         
         for i, (name, fmt) in enumerate(examples):
             ttk.Button(examples_frame, text=name, width=12,
-                      command=lambda f=fmt: self.set_format(format_entry, f)).grid(row=i//2, column=i%2, padx=2, pady=2)
-        
+                      command=lambda f=fmt: self.set_format(format_entry, f)).grid(row=i//4, column=i%4, padx=2, pady=2)
+ 
         # Buttons
         button_frame = ttk.Frame(self.settings_window)
         button_frame.pack(fill='x', padx=10, pady=10)
@@ -272,14 +310,99 @@ class DesktopClock:
                   command=self.close_settings).pack(side='left', padx=5)
         ttk.Button(button_frame, text="OK", 
                   command=lambda: self.apply_and_close(format_entry)).pack(side='left', padx=5)
-        
-        # Handle window close
-        self.settings_window.protocol("WM_DELETE_WINDOW", self.close_settings)
+        # Info Button
+        self.info_btn = ttk.Button(button_frame, text="View Info", command=self.toggle_info)
+        self.info_btn.pack(side='left', padx=5)
+        # Info text
+        info_text = """
+Author: Abhishek Kumar
+GitHub: https://github.com/abhishek9292
+Website: https://appsindia.in/
+Version: 1.0.0, License: (GPL)
+------
+TimeFormat: A:Weekday B:Month H:24-hour
+I:12-hour M:Minute S:Second p:AM/PM
+------
+Setup for Auto Start:
+1. Put a shortcut of this app in the Windows Startup folder.
+2. To access the Startup folder, press Win+R, type 'shell:startup', and press Enter.
+3. Paste the shortcut in the opened folder.
+4. The app will start automatically on system boot. 
+        """ 
+        # self.info_label = ttk.Label(self.settings_window,
+        #                     text=info_text.strip(),
+        #                     justify=tk.LEFT,
+        #                     foreground="gray",
+        #                     wraplength=400)
+        # self.info_label.pack(padx=10, pady=0, anchor="w")
+        self.info_label = self.make_clickable_text(self.settings_window, info_text)
+         
+        # Handle window close (minimize to tray instead of closing)
+        self.settings_window.protocol("WM_DELETE_WINDOW", self.minimize_settings_to_tray)
         
         # Center the settings window
         self.settings_window.transient(self.root)
-        self.settings_window.grab_set()
-    
+
+     
+    def make_clickable_text(self, parent, text):
+        """Create a Text widget with auto-detected clickable URLs."""
+        text_widget = tk.Text(parent, wrap="word", width=65, height=15,
+                              borderwidth=0, highlightthickness=0)
+        text_widget.insert("1.0", text)
+        text_widget.config(state="disabled")  # make readonly
+        # Store URL ranges for click detection
+        self.url_ranges = []
+        # Find all URLs
+        url_pattern = r"(https?://[^\s]+)"
+        for match in re.finditer(url_pattern, text):
+            start, end = match.span()
+            start_index = f"1.0+{start}c"
+            end_index = f"1.0+{end}c"
+            
+            # Store the URL and its range
+            self.url_ranges.append({
+                'url': match.group(1),
+                'start': start,
+                'end': end
+            })
+            
+            text_widget.tag_add("url", start_index, end_index)
+            # start, end = match.span()
+            # start_index = f"1.0+{start}c"
+            # end_index = f"1.0+{end}c"
+            # text_widget.tag_add("url", start_index, end_index)
+
+        # Style for URL
+        text_widget.tag_config("url", foreground="blue", underline=True)
+
+        # Click → open browser
+        def open_url(event):
+            index = text_widget.index(f"@{event.x},{event.y}")
+            char_pos = int(index.split('.')[1])
+            # for tag in text_widget.tag_names(index):
+            #     if tag == "url":
+            #         url = text_widget.get(f"{index} wordstart", f"{index} wordend")
+            #         webbrowser.open(url)
+            # Find which URL contains this position
+            for url_info in self.url_ranges:
+                if url_info['start'] <= char_pos < url_info['end']:
+                    webbrowser.open(url_info['url'])
+                    break
+        text_widget.tag_bind("url", "<Button-1>", open_url)
+
+        return text_widget
+
+    def toggle_info(self):
+        """Toggle visibility of the info section with clickable URLs."""
+        if self.info_label.winfo_ismapped():
+            self.info_label.pack_forget()
+            self.info_btn.config(text="View Info")
+            self.settings_window.geometry("400x540")
+        else:
+            self.info_label.pack(padx=10, pady=20, anchor="w")
+            self.info_btn.config(text="Hide Info")
+            self.settings_window.geometry("400x780")
+
     def on_position_change(self):
         """Handle position radio button change"""
         if hasattr(self, 'custom_frame'):
@@ -306,7 +429,8 @@ class DesktopClock:
             self.config["font_family"] = self.font_family_var.get()
             self.config["font_size"] = int(self.font_size_var.get())
             self.config["datetime_format"] = format_entry.get('1.0', tk.END).strip()
-            
+            self.config["position_x"] = int(self.position_x)
+            self.config["position_y"] = int(self.position_y)
             # Apply changes
             self.label.configure(font=(self.config["font_family"], self.config["font_size"], "bold"))
             self.update_position()
@@ -322,14 +446,19 @@ class DesktopClock:
         self.apply_settings(format_entry)
         self.close_settings()
     
+    def minimize_settings_to_tray(self):
+        """Minimize settings dialog to tray instead of closing"""
+        if self.settings_window:
+            self.settings_window.withdraw()
+    
     def close_settings(self):
-        """Close settings dialog"""
+        """Actually close settings dialog (used by Cancel button)"""
         if self.settings_window:
             self.settings_window.destroy()
             self.settings_window = None
     
     def toggle_visibility(self, icon=None, item=None):
-        """Toggle clock visibility"""
+        """Toggle clock visibility only (not settings window)"""
         self.config["visible"] = not self.config["visible"]
         
         if self.config["visible"]:
@@ -339,18 +468,18 @@ class DesktopClock:
         
         self.save_config()
         
-        # Update tray menu
+        # Update tray menu text
         if self.tray_icon:
             menu = pystray.Menu(
-                item('Settings', self.show_settings),
-                item('Show' if not self.config["visible"] else 'Hide', self.toggle_visibility),
+                MenuItem('Settings', self.show_settings),
+                MenuItem('Show Clock' if not self.config["visible"] else 'Hide Clock', self.toggle_visibility),
                 pystray.Menu.SEPARATOR,
-                item('Exit', self.quit_app)
+                MenuItem('Exit', self.quit_app)
             )
             self.tray_icon.menu = menu
     
     def hide_window(self):
-        """Hide window instead of closing"""
+        """Hide clock window instead of closing"""
         self.config["visible"] = False
         self.root.withdraw()
         self.save_config()
@@ -358,27 +487,45 @@ class DesktopClock:
         # Update tray menu
         if self.tray_icon:
             menu = pystray.Menu(
-                item('Settings', self.show_settings),
-                item('Show', self.toggle_visibility),
+                MenuItem('Settings', self.show_settings),
+                MenuItem('Show Clock', self.toggle_visibility),
                 pystray.Menu.SEPARATOR,
-                item('Exit', self.quit_app)
+                MenuItem('Exit', self.quit_app)
             )
             self.tray_icon.menu = menu
     
+
+    def check_single_instance(self):
+        if os.path.exists(self.lock_file):
+            print("Another instance already running!")
+            sys.exit(0)   # stop new instance
+        else:
+            open(self.lock_file, "w").close()
+
+    def cleanup(self):
+        if os.path.exists(self.lock_file):
+            os.remove(self.lock_file)
+
     def quit_app(self, icon=None, item=None):
-        """Quit application"""
+        """Completely exit application"""
         self.running = False
         self.save_config()
         
+        # Close settings window if open
+        if self.settings_window:
+            self.settings_window.destroy()
+            self.settings_window = None
+        
         if self.tray_icon:
             self.tray_icon.stop()
-        
+        self.cleanup()
         self.root.quit()
         self.root.destroy()
         sys.exit()
     
     def run(self):
         """Start the application"""
+        self.check_single_instance()
         if not self.config["visible"]:
             self.root.withdraw()
         

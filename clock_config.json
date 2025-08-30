@@ -4,6 +4,26 @@
   "custom_y": 50,
   "font_family": "Segoe UI",
   "font_size": 12,
-  "datetime_format": "%I:%M:%S %p\n%B %d, %Y",
-  "visible": true
+  "datetime_format": "%I:%M:%S %p\n%a %b %d, %Y",
+  "visible": true,
+  "position_x": 1820,
+  "position_y": 936,
+  "timezones": [
+    {
+      "name": "Local",
+      "timezone": "local",
+      "font_family": "Segoe UI",
+      "font_size": 12,
+      "datetime_format": "%H:%M \n%d-%m-%Y",
+      "color": "white"
+    },
+    {
+      "name": "Time 2",
+      "timezone": "US/Central",
+      "font_family": "Segoe UI",
+      "font_size": 12,
+      "datetime_format": "USA\n%I:%M %p\n%d-%m-%Y",
+      "color": "white"
+    }
+  ]
 }

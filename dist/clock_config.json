@@ -4,6 +4,6 @@
   "custom_y": 50,
   "font_family": "Segoe UI",
   "font_size": 12,
-  "datetime_format": "%I:%M:%S %p\n%B %d, %Y",
+  "datetime_format": "%I:%M:%S %p\n%A %B %d, %Y",
   "visible": true
 }
